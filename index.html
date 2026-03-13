@@ -48,22 +48,23 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // HINWEIS: Hier deine eigene Firebase Config eintragen, falls du GitHub nutzt.
+        // Falls du eine eigene Firebase-Datenbank hast, trage hier die Config ein
         const myFirebaseConfig = null; 
 
         function App() {
-            const initialData = {
-                "Montag": { game: "Laden...", start: "--:--", end: "--:--" },
-                "Dienstag": { game: "Laden...", start: "--:--", end: "--:--" },
-                "Mittwoch": { game: "Laden...", start: "--:--", end: "--:--" },
-                "Donnerstag": { game: "Laden...", start: "--:--", end: "--:--" },
-                "Freitag": { game: "Laden...", start: "--:--", end: "--:--" },
-                "Samstag": { game: "Laden...", start: "--:--", end: "--:--" },
-                "Sonntag": { game: "Laden...", start: "--:--", end: "--:--" },
-                "extra": { info: "Streamplan wird geladen..." }
+            // Standarddaten für GitHub, falls keine Datenbank da ist
+            const defaultData = {
+                "Montag": { game: "Minecraft", start: "18:00", end: "20:00" },
+                "Dienstag": { game: "Pause", start: "--:--", end: "--:--" },
+                "Mittwoch": { game: "Roblox", start: "17:00", end: "19:00" },
+                "Donnerstag": { game: "Community Games", start: "18:30", end: "21:00" },
+                "Freitag": { game: "Pause", start: "--:--", end: "--:--" },
+                "Samstag": { game: "Special Stream", start: "15:00", end: "Open End" },
+                "Sonntag": { game: "Zuschauer-Wunsch", start: "16:00", end: "18:00" },
+                "extra": { info: "Willkommen auf meinem Streamplan! Schau gerne auf Twitch vorbei." }
             };
 
-            const [streamData, setStreamData] = useState(initialData);
+            const [streamData, setStreamData] = useState(defaultData);
             const [isAdmin, setIsAdmin] = useState(false);
             const [isSaving, setIsSaving] = useState(false);
             const [user, setUser] = useState(null);
@@ -77,53 +78,57 @@
             const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'streamplan-crazyfunworld';
             const ADMIN_PASSWORD = "ttvcfw24"; 
 
-            // 1. Initialisierung und Auth (Regel 3: Zuerst Auth, dann Firestore)
+            // Daten beim Starten laden (entweder Browser-Speicher oder Default)
             useEffect(() => {
+                const savedData = localStorage.getItem('crazyfunworld_plan');
+                if (savedData) {
+                    try {
+                        setStreamData(JSON.parse(savedData));
+                    } catch (e) {
+                        console.error("Fehler beim Laden lokaler Daten");
+                    }
+                }
+
+                // Firebase nur initialisieren, wenn Config vorhanden
                 const configStr = window.__firebase_config;
                 const config = myFirebaseConfig || (configStr ? JSON.parse(configStr) : null);
                 
                 if (config && window.FirebaseSDK) {
-                    const app = window.FirebaseSDK.initializeApp(config);
-                    const auth = window.FirebaseSDK.getAuth(app);
-                    const firestore = window.FirebaseSDK.getFirestore(app);
-                    setDb(firestore);
+                    try {
+                        const app = window.FirebaseSDK.initializeApp(config);
+                        const auth = window.FirebaseSDK.getAuth(app);
+                        const firestore = window.FirebaseSDK.getFirestore(app);
+                        setDb(firestore);
 
-                    const initAuth = async () => {
-                        try {
-                            if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-                                await window.FirebaseSDK.signInWithCustomToken(auth, window.__initial_auth_token);
-                            } else {
-                                await window.FirebaseSDK.signInAnonymously(auth);
-                            }
-                        } catch (err) {
-                            console.error("Auth Fehler:", err);
-                        }
-                    };
-
-                    initAuth();
-                    const unsubscribe = window.FirebaseSDK.onAuthStateChanged(auth, setUser);
-                    return () => unsubscribe();
+                        const initAuth = async () => {
+                            try {
+                                if (window.__initial_auth_token) {
+                                    await window.FirebaseSDK.signInWithCustomToken(auth, window.__initial_auth_token);
+                                } else {
+                                    await window.FirebaseSDK.signInAnonymously(auth);
+                                }
+                            } catch (err) {}
+                        };
+                        initAuth();
+                        window.FirebaseSDK.onAuthStateChanged(auth, setUser);
+                    } catch (e) {
+                        console.log("Firebase deaktiviert - Modus: Lokal");
+                    }
                 }
             }, []);
 
-            // 2. Daten laden (Nur wenn User vorhanden - Regel 1 & 3)
+            // Echtzeit-Update nur wenn DB vorhanden
             useEffect(() => {
                 if (!user || !db) return;
-
-                // Pfad gemäß Regel 1: /artifacts/{appId}/public/data/{collectionName}
                 const docRef = window.FirebaseSDK.doc(db, 'artifacts', appId, 'public', 'data', 'schedule', 'weekly_plan_v1');
-                
                 const unsubscribe = window.FirebaseSDK.onSnapshot(docRef, 
                     (docSnap) => {
                         if (docSnap.exists()) {
                             setStreamData(docSnap.data());
                         }
                     }, 
-                    (error) => {
-                        console.error("Firestore Permission Fehler abgefangen:", error);
-                    }
+                    (err) => console.log("Firestore Permission: Lokal-Modus aktiv")
                 );
-
                 return () => unsubscribe();
             }, [user, db, appId]);
 
@@ -140,16 +145,21 @@
             };
 
             const handleSave = async () => {
-                if (!isAdmin || !db || !user) return;
                 setIsSaving(true);
-                try {
-                    const docRef = window.FirebaseSDK.doc(db, 'artifacts', appId, 'public', 'data', 'schedule', 'weekly_plan_v1');
-                    await window.FirebaseSDK.setDoc(docRef, streamData);
-                } catch (err) {
-                    console.error("Speicherfehler:", err);
-                } finally {
-                    setIsSaving(false);
+                // Immer lokal speichern
+                localStorage.setItem('crazyfunworld_plan', JSON.stringify(streamData));
+
+                // Wenn Datenbank da ist, auch dorthin sichern
+                if (isAdmin && db && user) {
+                    try {
+                        const docRef = window.FirebaseSDK.doc(db, 'artifacts', appId, 'public', 'data', 'schedule', 'weekly_plan_v1');
+                        await window.FirebaseSDK.setDoc(docRef, streamData);
+                    } catch (err) {
+                        console.error("Cloud-Speicherfehler:", err);
+                    }
                 }
+                
+                setTimeout(() => setIsSaving(false), 500);
             };
 
             const updateField = (dayOrKey, field, value) => {
@@ -181,11 +191,11 @@
                                         placeholder="Passwort..."
                                         value={passwordInput}
                                         onChange={(e) => setPasswordInput(e.target.value)}
-                                        className={`w-full bg-white/5 border ${loginError ? 'border-red-500' : 'border-white/10'} rounded-lg p-3 text-white outline-none focus:border-cyan-500 transition-colors`}
+                                        className={`w-full bg-white/5 border ${loginError ? 'border-red-500' : 'border-white/10'} rounded-lg p-3 text-white outline-none focus:border-cyan-500`}
                                         autoFocus
                                     />
-                                    <button type="submit" className="w-full bg-cyan-500 text-[#060b13] font-bold py-2 rounded-lg uppercase text-sm hover:bg-cyan-400 transition-colors">Login</button>
-                                    <button type="button" onClick={() => {setShowLogin(false); setLoginError(false);}} className="w-full text-white/40 hover:text-white text-xs py-1 transition-colors">Abbrechen</button>
+                                    <button type="submit" className="w-full bg-cyan-500 text-[#060b13] font-bold py-2 rounded-lg uppercase text-sm">Login</button>
+                                    <button type="button" onClick={() => setShowLogin(false)} className="w-full text-white/40 text-xs">Abbrechen</button>
                                 </form>
                             </div>
                         </div>
@@ -200,7 +210,7 @@
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
                             {days.map((day) => (
                                 <div key={day} className="group bg-[#0f172a]/90 border border-white/5 rounded-sm p-6 flex flex-col min-h-[300px] relative transition-all hover:border-cyan-500/30">
-                                    <div className="absolute top-0 left-0 w-full h-[2px] bg-cyan-500 opacity-20 group-hover:opacity-100 transition-opacity"></div>
+                                    <div className="absolute top-0 left-0 w-full h-[2px] bg-cyan-500 opacity-20 group-hover:opacity-100"></div>
                                     <h2 className="text-3xl font-bold text-cyan-400 font-header uppercase mb-6 border-b border-cyan-500/10 pb-1 italic">{day}</h2>
                                     <div className="space-y-6">
                                         <div>
@@ -210,7 +220,6 @@
                                                 value={streamData[day]?.game || ""} 
                                                 onChange={(e) => updateField(day, 'game', e.target.value)}
                                                 disabled={!isAdmin}
-                                                placeholder="PAUSE"
                                                 className="w-full bg-transparent border-none text-lg font-medium outline-none text-white placeholder:text-white/10"
                                             />
                                         </div>
@@ -221,9 +230,9 @@
                                     </div>
                                     <div className="mt-auto pt-6 flex items-center justify-between text-[11px] font-bold text-cyan-500/60 uppercase tracking-tighter">
                                         <div className="flex items-center gap-1">
-                                            <input type="text" value={streamData[day]?.start || ""} onChange={(e) => updateField(day, 'start', e.target.value)} disabled={!isAdmin} placeholder="--:--" className="w-10 bg-transparent text-center outline-none focus:text-white placeholder:text-white/10" />
+                                            <input type="text" value={streamData[day]?.start || ""} onChange={(e) => updateField(day, 'start', e.target.value)} disabled={!isAdmin} placeholder="--:--" className="w-10 bg-transparent text-center outline-none focus:text-white" />
                                             <span>BIS</span>
-                                            <input type="text" value={streamData[day]?.end || ""} onChange={(e) => updateField(day, 'end', e.target.value)} disabled={!isAdmin} placeholder="--:--" className="w-10 bg-transparent text-center outline-none focus:text-white placeholder:text-white/10" />
+                                            <input type="text" value={streamData[day]?.end || ""} onChange={(e) => updateField(day, 'end', e.target.value)} disabled={!isAdmin} placeholder="--:--" className="w-10 bg-transparent text-center outline-none focus:text-white" />
                                             <span>UHR</span>
                                         </div>
                                     </div>
@@ -239,8 +248,7 @@
                                         value={streamData['extra']?.info || ""} 
                                         onChange={(e) => updateField('extra', 'info', e.target.value)}
                                         disabled={!isAdmin}
-                                        placeholder="Hier News eintragen..."
-                                        className="w-full flex-grow bg-white/5 text-sm text-white border border-white/5 rounded-lg p-3 outline-none focus:border-cyan-500/50 resize-none transition-colors placeholder:text-white/10"
+                                        className="w-full flex-grow bg-white/5 text-sm text-white border border-white/5 rounded-lg p-3 outline-none focus:border-cyan-500/50 resize-none"
                                     />
                                 </div>
                             </div>
@@ -254,7 +262,7 @@
                     {!isAdmin && (
                         <button 
                             onClick={() => setShowLogin(true)}
-                            className="fixed bottom-6 right-6 bg-white/5 hover:bg-white/10 text-white/20 hover:text-cyan-400 border border-white/5 px-4 py-2 rounded-full text-[10px] uppercase font-bold tracking-widest transition-all shadow-lg active:scale-95"
+                            className="fixed bottom-6 right-6 bg-white/5 hover:bg-white/10 text-white/20 hover:text-cyan-400 border border-white/5 px-4 py-2 rounded-full text-[10px] uppercase font-bold tracking-widest transition-all shadow-lg shadow-black"
                         >
                             Bearbeiten
                         </button>
